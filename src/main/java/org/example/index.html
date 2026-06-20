@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inca Age Calculator</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f4f8; padding: 20px; color: #333; }
+        h1 { text-align: center; color: #0056b3; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .drop-zone { border: 2px dashed #0056b3; border-radius: 8px; padding: 30px; text-align: center; margin-bottom: 20px; background-color: #f8fbff; cursor: pointer; transition: 0.3s; }
+        .drop-zone.dragover { background-color: #e2eef9; border-color: #004494; }
+        .drop-zone p { margin: 10px 0; font-weight: bold; color: #555; }
+        input[type="file"] { display: none; }
+        .status { margin-bottom: 20px; font-weight: bold; color: #28a745; text-align: center; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; border: 1px solid #ddd; text-align: center; }
+        th { background-color: #0056b3; color: white; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🏔️ คำนวณอายุประชากรอินคา</h1>
+    
+    <div id="drop-calendar" class="drop-zone" onclick="document.getElementById('file-calendar').click()">
+        <p>📂 ขั้นตอนที่ 1: คลิกลากไฟล์ Q1_Sample_Calendar.csv มาวางที่นี่</p>
+        <span id="calendar-status" style="color: #666; font-size: 0.9em;">(ยังไม่ได้อัปโหลด)</span>
+        <input type="file" id="file-calendar" accept=".csv">
+    </div>
+
+    <div id="drop-census" class="drop-zone" style="opacity: 0.5; pointer-events: none;" onclick="document.getElementById('file-census').click()">
+        <p>👥 ขั้นตอนที่ 2: คลิกลากไฟล์รายชื่อ (Census) มาวางที่นี่</p>
+        <span id="census-status" style="color: #666; font-size: 0.9em;">(รอข้อมูลปฏิทิน...)</span>
+        <input type="file" id="file-census" accept=".csv">
+    </div>
+
+    <div id="loading" class="status" style="display: none;">⏳ กำลังประมวลผล...</div>
+
+    <table id="result-table" style="display: none;">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Age in Days</th>
+                <th>Age (Y/M)</th>
+            </tr>
+        </thead>
+        <tbody id="result-body"></tbody>
+    </table>
+</div>
+
+<script>
+    // ตัวแปรเก็บข้อมูลปฏิทินในหน่วยความจำ
+    let dateToSeq = {};
+    let monthsInYear = {};
+    let isCalendarReady = false;
+
+    // --- จัดการ UI การลากไฟล์ (Drag & Drop) ---
+    function setupDropZone(dropId, inputId, onFileLoaded) {
+        const dropZone = document.getElementById(dropId);
+        const fileInput = document.getElementById(inputId);
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                fileInput.files = e.dataTransfer.files;
+                onFileLoaded(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                onFileLoaded(e.target.files[0]);
+            }
+        });
+    }
+
+    // --- อ่านไฟล์ Calendar ---
+    setupDropZone('drop-calendar', 'file-calendar', (file) => {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            parseCalendar(e.target.result);
+            document.getElementById('calendar-status').innerHTML = "✅ โหลดปฏิทินเรียบร้อยแล้ว!";
+            document.getElementById('calendar-status').style.color = "green";
+            
+            // เปิดให้ลากไฟล์รายชื่อได้
+            const dropCensus = document.getElementById('drop-census');
+            dropCensus.style.opacity = "1";
+            dropCensus.style.pointerEvents = "auto";
+            document.getElementById('census-status').innerHTML = "(พร้อมอัปโหลดแล้ว)";
+        };
+        reader.readAsText(file);
+    });
+
+    // --- อ่านไฟล์ Census ---
+    setupDropZone('drop-census', 'file-census', (file) => {
+        if (!isCalendarReady) return alert("กรุณาโหลดปฏิทินก่อนครับ!");
+        document.getElementById('loading').style.display = "block";
+        document.getElementById('result-table').style.display = "none";
+        
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            calculateAges(e.target.result);
+            document.getElementById('census-status').innerHTML = `✅ ประมวลผลเสร็จสิ้น (${file.name})`;
+            document.getElementById('census-status').style.color = "green";
+            document.getElementById('loading').style.display = "none";
+            document.getElementById('result-table').style.display = "table";
+        };
+        reader.readAsText(file);
+    });
+
+    // ==========================================
+    // Phase 1: ลอจิกจำลองปฏิทิน (แปลงจาก Java)
+    // ==========================================
+    function parseCalendar(csvText) {
+        dateToSeq = {};
+        monthsInYear = {};
+        const lines = csvText.split(/\r?\n/);
+        
+        let y = 1, m = 1, d = 1;
+        let monthsThisYear = 12;
+
+        for (let i = 1; i < lines.length; i++) {
+            let line = lines[i].trim();
+            if (!line) continue;
+            
+            let parts = line.split(',');
+            let seq = parseInt(parts[0]);
+            let clearSky = parts[1].trim().toLowerCase() === 'true';
+            let fullMoon = parts[2].trim().toLowerCase() === 'true';
+            let scutes = parseInt(parts[3]);
+
+            dateToSeq[`${y}-${m}-${d}`] = seq;
+
+            if (m === 12 && d === 1) {
+                monthsThisYear = (scutes === 13) ? 13 : 12;
+            }
+            monthsInYear[y] = monthsThisYear;
+
+            let isNewMonth = false;
+            if (d >= 28 && d <= 30) {
+                if (fullMoon && clearSky) isNewMonth = true;
+            } else if (d === 31) {
+                isNewMonth = true;
+            }
+
+            if (isNewMonth) {
+                d = 1;
+                if (m === monthsThisYear) {
+                    m = 1; y++; monthsThisYear = 12;
+                } else {
+                    m++;
+                }
+            } else {
+                d++;
+            }
+        }
+        isCalendarReady = true;
+    }
+
+    // ==========================================
+    // Phase 2: ลอจิกคำนวณอายุ (แปลงจาก Java)
+    // ==========================================
+    function calculateAges(csvText) {
+        const lines = csvText.split(/\r?\n/);
+        const tbody = document.getElementById('result-body');
+        tbody.innerHTML = ""; // เคลียร์ข้อมูลเก่า
+
+        let htmlContent = "";
+
+        for (let i = 1; i < lines.length; i++) {
+            let line = lines[i].trim();
+            if (!line) continue;
+
+            let parts = line.split(',');
+            let id = parts[0];
+            let dobParts = parts[1].split('-');
+            let dodParts = parts[2].split('-');
+
+            let d_b = parseInt(dobParts[0]), m_b = parseInt(dobParts[1]), y_b = parseInt(dobParts[2]);
+            let d_d = parseInt(dodParts[0]), m_d = parseInt(dodParts[1]), y_d = parseInt(dodParts[2]);
+
+            let seq_b = dateToSeq[`${y_b}-${m_b}-${d_b}`];
+            let seq_d = dateToSeq[`${y_d}-${m_d}-${d_d}`];
+
+            if (seq_b === undefined || seq_d === undefined) {
+                htmlContent += `<tr><td>${id}</td><td>N/A</td><td>N/A</td></tr>`;
+                continue;
+            }
+
+            // คำนวณ Age in Days
+            let ageDays = seq_d - seq_b;
+
+            // คำนวณ Age Y/M
+            let yDiff = y_d - y_b;
+            let ageY = (m_d > m_b || (m_d === m_b && d_d >= d_b)) ? yDiff : yDiff - 1;
+
+            let ageM = 0;
+            let currY = y_b + ageY;
+            let currM = m_b;
+
+            while (currY !== y_d || currM !== m_d) {
+                currM++;
+                let maxM = monthsInYear[currY] || 12;
+                if (currM > maxM) {
+                    currM = 1;
+                    currY++;
+                }
+                ageM++;
+            }
+
+            if (d_d < d_b) {
+                ageM--;
+            }
+
+            htmlContent += `<tr><td>${id}</td><td>${ageDays}</td><td>${ageY}/${ageM}</td></tr>`;
+        }
+        
+        tbody.innerHTML = htmlContent;
+    }
+</script>
+
+</body>
+</html>
